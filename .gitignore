@@ -1,0 +1,10 @@
+node_modules/
+package-lock.json
+build/
+*.log
+deployed_*.json
+.openzeppelin/.session
+.openzeppelin/.lock
+.openzeppelin/dev-*.json
+/.idea/
+.env

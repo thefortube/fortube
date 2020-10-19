@@ -1,0 +1,340 @@
+{
+  "contracts": {
+    "BankController": {
+      "address": "0x499401f90322fbd8A17FB0eF47Dd3a2Fe1c8c4a5",
+      "constructorCode": "608060405234801561001057600080fd5b506133ce806100206000396000f3fe",
+      "bodyBytecodeHash": "4e1afc23334b7dbc2755f27d0c1032a441dbe0e7dcd5a82ec6b42a840ace979a",
+      "localBytecodeHash": "efedf7e0622d26ed50408bb0b13a3b8892dbf2129f61743ef9b7285addc8221d",
+      "deployedBytecodeHash": "efedf7e0622d26ed50408bb0b13a3b8892dbf2129f61743ef9b7285addc8221d",
+      "types": {
+        "t_bool": {
+          "id": "t_bool",
+          "kind": "elementary",
+          "label": "bool"
+        },
+        "t_uint256": {
+          "id": "t_uint256",
+          "kind": "elementary",
+          "label": "uint256"
+        },
+        "t_array:50<t_uint256>": {
+          "id": "t_array:50<t_uint256>",
+          "valueType": "t_uint256",
+          "length": "50",
+          "kind": "array",
+          "label": "uint256[50]"
+        },
+        "t_struct<BankController.Market>": {
+          "id": "t_struct<BankController.Market>",
+          "kind": "struct",
+          "label": "BankController.Market",
+          "members": [
+            {
+              "label": "fTokenAddress",
+              "astId": 452,
+              "type": "t_address",
+              "src": "609:21:2"
+            },
+            {
+              "label": "isListed",
+              "astId": 454,
+              "type": "t_bool",
+              "src": "697:13:2"
+            },
+            {
+              "label": "collateralFactor",
+              "astId": 456,
+              "type": "t_uint256",
+              "src": "989:24:2"
+            },
+            {
+              "label": "accountMembership",
+              "astId": 460,
+              "type": "t_mapping<t_bool>",
+              "src": "1090:42:2"
+            }
+          ]
+        },
+        "t_address": {
+          "id": "t_address",
+          "kind": "elementary",
+          "label": "address"
+        },
+        "t_mapping<t_bool>": {
+          "id": "t_mapping<t_bool>",
+          "valueType": "t_bool",
+          "label": "mapping(key => bool)",
+          "kind": "mapping"
+        },
+        "t_mapping<t_struct<BankController.Market>>": {
+          "id": "t_mapping<t_struct<BankController.Market>>",
+          "valueType": "t_struct<BankController.Market>",
+          "label": "mapping(key => BankController.Market)",
+          "kind": "mapping"
+        },
+        "t_mapping<t_uint256>": {
+          "id": "t_mapping<t_uint256>",
+          "valueType": "t_uint256",
+          "label": "mapping(key => uint256)",
+          "kind": "mapping"
+        },
+        "t_array:dyn<t_address>": {
+          "id": "t_array:dyn<t_address>",
+          "valueType": "t_address",
+          "length": "dyn",
+          "kind": "array",
+          "label": "address[]"
+        },
+        "t_mapping<t_array:dyn<t_address>>": {
+          "id": "t_mapping<t_array:dyn<t_address>>",
+          "valueType": "t_array:dyn<t_address>",
+          "label": "mapping(key => address[])",
+          "kind": "mapping"
+        }
+      },
+      "storage": [
+        {
+          "contract": "Initializable",
+          "path": "@openzeppelin/upgrades/contracts/Initializable.sol",
+          "label": "initialized",
+          "astId": 4,
+          "type": "t_bool",
+          "src": "757:24:0"
+        },
+        {
+          "contract": "Initializable",
+          "path": "@openzeppelin/upgrades/contracts/Initializable.sol",
+          "label": "initializing",
+          "astId": 6,
+          "type": "t_bool",
+          "src": "876:25:0"
+        },
+        {
+          "contract": "Initializable",
+          "path": "@openzeppelin/upgrades/contracts/Initializable.sol",
+          "label": "______gap",
+          "astId": 71,
+          "type": "t_array:50<t_uint256>",
+          "src": "1982:29:0"
+        },
+        {
+          "contract": "BankController",
+          "path": "contracts/BankController.sol",
+          "label": "markets",
+          "astId": 465,
+          "type": "t_mapping<t_struct<BankController.Market>>",
+          "src": "1187:41:2"
+        },
+        {
+          "contract": "BankController",
+          "path": "contracts/BankController.sol",
+          "label": "bankEntryAddress",
+          "astId": 467,
+          "type": "t_address",
+          "src": "1235:31:2"
+        },
+        {
+          "contract": "BankController",
+          "path": "contracts/BankController.sol",
+          "label": "theForceToken",
+          "astId": 469,
+          "type": "t_address",
+          "src": "1301:28:2"
+        },
+        {
+          "contract": "BankController",
+          "path": "contracts/BankController.sol",
+          "label": "rewardFactors",
+          "astId": 473,
+          "type": "t_mapping<t_uint256>",
+          "src": "1545:49:2"
+        },
+        {
+          "contract": "BankController",
+          "path": "contracts/BankController.sol",
+          "label": "accountAssets",
+          "astId": 478,
+          "type": "t_mapping<t_array:dyn<t_address>>",
+          "src": "1710:50:2"
+        },
+        {
+          "contract": "BankController",
+          "path": "contracts/BankController.sol",
+          "label": "allMarkets",
+          "astId": 484,
+          "type": "t_array:dyn<t_address>",
+          "src": "1835:27:2"
+        },
+        {
+          "contract": "BankController",
+          "path": "contracts/BankController.sol",
+          "label": "allUnderlyingMarkets",
+          "astId": 487,
+          "type": "t_array:dyn<t_address>",
+          "src": "1869:37:2"
+        },
+        {
+          "contract": "BankController",
+          "path": "contracts/BankController.sol",
+          "label": "oracle",
+          "astId": 489,
+          "type": "t_address",
+          "src": "1913:21:2"
+        },
+        {
+          "contract": "BankController",
+          "path": "contracts/BankController.sol",
+          "label": "closeFactor",
+          "astId": 560,
+          "type": "t_uint256",
+          "src": "2570:26:2"
+        },
+        {
+          "contract": "BankController",
+          "path": "contracts/BankController.sol",
+          "label": "liquidationIncentive",
+          "astId": 562,
+          "type": "t_uint256",
+          "src": "2603:35:2"
+        },
+        {
+          "contract": "BankController",
+          "path": "contracts/BankController.sol",
+          "label": "maxAssets",
+          "astId": 564,
+          "type": "t_uint256",
+          "src": "2645:24:2"
+        },
+        {
+          "contract": "BankController",
+          "path": "contracts/BankController.sol",
+          "label": "admin",
+          "astId": 566,
+          "type": "t_address",
+          "src": "2676:20:2"
+        },
+        {
+          "contract": "BankController",
+          "path": "contracts/BankController.sol",
+          "label": "proposedAdmin",
+          "astId": 568,
+          "type": "t_address",
+          "src": "2703:28:2"
+        }
+      ],
+      "warnings": {
+        "hasConstructor": false,
+        "hasSelfDestruct": false,
+        "hasDelegateCall": false,
+        "hasInitialValuesInDeclarations": false,
+        "uninitializedBaseContracts": []
+      }
+    },
+    "Bank": {
+      "address": "0x8A88FAE2977DBdf3ca247BccCab4eb1ee5a00249",
+      "constructorCode": "608060405234801561001057600080fd5b5061105f806100206000396000f3fe",
+      "bodyBytecodeHash": "cca4f1acbf7b53dd8860f48767f8fbf2add43f32b254a1c71187b2dd38337aa6",
+      "localBytecodeHash": "a27bd9bf7156a1cbd600e2f11b0c45506682eb0191fc3d84735855f18a849b86",
+      "deployedBytecodeHash": "a27bd9bf7156a1cbd600e2f11b0c45506682eb0191fc3d84735855f18a849b86",
+      "types": {
+        "t_bool": {
+          "id": "t_bool",
+          "kind": "elementary",
+          "label": "bool"
+        },
+        "t_uint256": {
+          "id": "t_uint256",
+          "kind": "elementary",
+          "label": "uint256"
+        },
+        "t_array:50<t_uint256>": {
+          "id": "t_array:50<t_uint256>",
+          "valueType": "t_uint256",
+          "length": "50",
+          "kind": "array",
+          "label": "uint256[50]"
+        },
+        "t_address": {
+          "id": "t_address",
+          "kind": "elementary",
+          "label": "address"
+        }
+      },
+      "storage": [
+        {
+          "contract": "Initializable",
+          "path": "@openzeppelin/upgrades/contracts/Initializable.sol",
+          "label": "initialized",
+          "astId": 4,
+          "type": "t_bool",
+          "src": "757:24:0"
+        },
+        {
+          "contract": "Initializable",
+          "path": "@openzeppelin/upgrades/contracts/Initializable.sol",
+          "label": "initializing",
+          "astId": 6,
+          "type": "t_bool",
+          "src": "876:25:0"
+        },
+        {
+          "contract": "Initializable",
+          "path": "@openzeppelin/upgrades/contracts/Initializable.sol",
+          "label": "______gap",
+          "astId": 71,
+          "type": "t_array:50<t_uint256>",
+          "src": "1982:29:0"
+        },
+        {
+          "contract": "Bank",
+          "path": "contracts/Bank.sol",
+          "label": "controller",
+          "astId": 90,
+          "type": "t_address",
+          "src": "449:33:1"
+        },
+        {
+          "contract": "Bank",
+          "path": "contracts/Bank.sol",
+          "label": "admin",
+          "astId": 92,
+          "type": "t_address",
+          "src": "489:20:1"
+        }
+      ],
+      "warnings": {
+        "hasConstructor": false,
+        "hasSelfDestruct": false,
+        "hasDelegateCall": false,
+        "hasInitialValuesInDeclarations": false,
+        "uninitializedBaseContracts": []
+      }
+    }
+  },
+  "solidityLibs": {},
+  "proxies": {
+    "bank2.0/BankController": [
+      {
+        "address": "0xFEA6F75B2497c737aAF4f5d968F976b2A6a9d29c",
+        "version": "1.0.0",
+        "implementation": "0x499401f90322fbd8A17FB0eF47Dd3a2Fe1c8c4a5",
+        "admin": "0xbb43a6D9B5498884C318911b68a608798d59DAc6",
+        "kind": "Upgradeable"
+      }
+    ],
+    "bank2.0/Bank": [
+      {
+        "address": "0x180D11a620B75F141DfE881B43a3B6f30e43b26F",
+        "version": "1.0.0",
+        "implementation": "0x8A88FAE2977DBdf3ca247BccCab4eb1ee5a00249",
+        "admin": "0xbb43a6D9B5498884C318911b68a608798d59DAc6",
+        "kind": "Upgradeable"
+      }
+    ]
+  },
+  "manifestVersion": "2.2",
+  "version": "1.0.0",
+  "proxyAdmin": {
+    "address": "0xbb43a6D9B5498884C318911b68a608798d59DAc6"
+  }
+}
