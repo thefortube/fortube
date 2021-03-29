@@ -18,7 +18,6 @@ contract InterestRateModel {
         multiplierPerBlock = multiplierPerYear.div(blocksPerYear);
     }
 
-    // 计算利用率
     function utilizationRate(
         uint256 cash,
         uint256 borrows,
@@ -32,7 +31,6 @@ contract InterestRateModel {
         return borrows.mul(1e18).div(cash.add(borrows));
     }
 
-    // 借款利率
     function getBorrowRate(
         uint256 cash,
         uint256 borrows,
@@ -42,7 +40,6 @@ contract InterestRateModel {
         return ur.mul(multiplierPerBlock).div(1e18).add(baseRatePerBlock);
     }
 
-    // 存款利率
     function getSupplyRate(
         uint256 cash,
         uint256 borrows,

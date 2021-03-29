@@ -9,6 +9,6 @@ enum RewardType {
     Withdraw,
     Repay,
     Liquidation,
-    TokenIn, //入金，为还款和存款的组合
-    TokenOut //出金， 为取款和借款的组合
+    TokenIn,
+    TokenOut
 }
