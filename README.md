@@ -252,9 +252,6 @@ FCAN:
 FADA:
 - https://bscscan.com/address/0xe4F621719D6b9f1C392DA83e8d766D55b5663805#code
 
-FPROM:
-- https://bscscan.com/address/0xe64fccB328cDD89d90534C9ebc2F6EA13F530741#code
-
 FATOM:
 - https://bscscan.com/address/0x5f6ffEE82666Db203d89fcf5ea730113455503Cb#code
 
