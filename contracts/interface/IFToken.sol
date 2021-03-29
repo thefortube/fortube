@@ -35,7 +35,7 @@ interface IFToken is IERC20 {
         bytes calldata payload
     ) external;
 
-    //用户存借取还操作后的兑换率
+    // Exchange rate after the user deposits, borrows, withdraw and repay 
     function exchangeRateCurrent() external view returns (uint256 exchangeRate);
 
     function repay(address borrower, uint256 repayAmount)
@@ -91,4 +91,5 @@ interface IFToken is IERC20 {
 
     function totalCash() external view returns (uint256);
     function totalReserves() external view returns (uint256);
+    function totalBorrows() external view returns (uint256);
 }

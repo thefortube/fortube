@@ -8,8 +8,9 @@ import "./interface/IBankController.sol";
 import "./RewardType.sol";
 import "./library/EthAddressLib.sol";
 import "@openzeppelin/upgrades/contracts/Initializable.sol";
+import "./interface/IFlashLoanReceiver.sol";
 
-// 入口合约
+// Contract Entry
 contract Bank is Initializable {
     using SafeMath for uint256;
 
@@ -19,6 +20,13 @@ contract Bank is Initializable {
 
     //monitor event
     event MonitorEvent(bytes32 indexed funcName, bytes payload);
+    event FlashLoan(
+        address indexed receiver,
+        address indexed token,
+        uint256 amount,
+        uint256 fee
+    );
+
     modifier onlyFToken(address fToken) {
         require(
             controller.marketsContains(fToken) ||
@@ -35,13 +43,21 @@ contract Bank is Initializable {
         emit MonitorEvent(funcName, payload);
     }
 
-    // bank controller 实例
+    // bank controller instance
     IBankController public controller;
 
     address public admin;
 
     address public proposedAdmin;
     address public pauser;
+
+    bool private loaning;
+    modifier nonSelfLoan() {
+        require(!loaning, "re-loaning");
+        loaning = true;
+        _;
+        loaning = false;
+    }
 
     modifier onlyAdmin {
         require(msg.sender == admin, "OnlyAdmin");
@@ -68,7 +84,7 @@ contract Bank is Initializable {
         _;
     }
 
-    // 初始化，只能初始化一次
+    // Initialization, can only be initialized once
     function initialize(address _controller, address _mulSig)
         public
         initializer
@@ -105,35 +121,21 @@ contract Bank is Initializable {
         proposedAdmin = address(0);
     }
 
-    // 存钱返token
-    modifier rewardFor(address usr, RewardType rewardType) {
-        uint256 gasStart = gasleft();
-        _;
-        uint256 gasSpent = gasStart - gasleft();
-        controller.rewardForByType(
-            usr,
-            gasSpent,
-            tx.gasprice,
-            uint256(rewardType)
-        );
-    }
-
-    // 用户存款
+    // User deposit
     function deposit(address token, uint256 amount)
         public
         payable
         whenUnpaused
-        rewardFor(msg.sender, RewardType.Deposit)
     {
         return this._deposit{value: msg.value}(token, amount, msg.sender);
     }
 
-    // 用户存款
+    // User deposit
     function _deposit(
         address token,
         uint256 amount,
         address account
-    ) external payable whenUnpaused onlySelf {
+    ) external payable whenUnpaused onlySelf nonSelfLoan {
         IFToken fToken = IFToken(controller.getFTokeAddress(token));
         require(
             controller.marketsContains(address(fToken)),
@@ -148,11 +150,11 @@ contract Bank is Initializable {
         emit MonitorEvent("Deposit", flog);
     }
 
-    // 用户借款
+    // User borrow
     function borrow(address underlying, uint256 borrowAmount)
         public
         whenUnpaused
-        rewardFor(msg.sender, RewardType.Borrow)
+        nonSelfLoan
     {
         IFToken fToken = IFToken(controller.getFTokeAddress(underlying));
         require(
@@ -164,11 +166,11 @@ contract Bank is Initializable {
         emit MonitorEvent("Borrow", flog);
     }
 
-    // 用户取款 取 fToken 的数量
+    // The user specifies a certain amount of ftoken and retrieves the underlying assets
     function withdraw(address underlying, uint256 withdrawTokens)
         public
         whenUnpaused
-        rewardFor(msg.sender, RewardType.Withdraw)
+        nonSelfLoan
         returns (uint256)
     {
         IFToken fToken = IFToken(controller.getFTokeAddress(underlying));
@@ -186,11 +188,11 @@ contract Bank is Initializable {
         return amount;
     }
 
-    // 用户取款 取底层 token 的数量
+    // The user retrieves a certain amount of underlying assets
     function withdrawUnderlying(address underlying, uint256 withdrawAmount)
         public
         whenUnpaused
-        rewardFor(msg.sender, RewardType.Withdraw)
+        nonSelfLoan
         returns (uint256)
     {
         IFToken fToken = IFToken(controller.getFTokeAddress(underlying));
@@ -208,23 +210,22 @@ contract Bank is Initializable {
         return amount;
     }
 
-    // 用户还款
+    // User repayment
     function repay(address token, uint256 repayAmount)
         public
         payable
         whenUnpaused
-        rewardFor(msg.sender, RewardType.Repay)
         returns (uint256)
     {
         return this._repay{value: msg.value}(token, repayAmount, msg.sender);
     }
 
-    // 用户还款
+    // User repayment
     function _repay(
         address token,
         uint256 repayAmount,
         address account
-    ) public payable whenUnpaused onlySelf returns (uint256) {
+    ) public payable whenUnpaused onlySelf nonSelfLoan returns (uint256) {
         IFToken fToken = IFToken(controller.getFTokeAddress(token));
         require(
             controller.marketsContains(address(fToken)),
@@ -247,13 +248,13 @@ contract Bank is Initializable {
         return actualRepayAmount;
     }
 
-    // 用户清算
+    // User Liquidate
     function liquidateBorrow(
         address borrower,
         address underlyingBorrow,
         address underlyingCollateral,
         uint256 repayAmount
-    ) public payable whenUnpaused {
+    ) public payable whenUnpaused nonSelfLoan {
         require(msg.sender != borrower, "Liquidator cannot be borrower");
         require(repayAmount > 0, "Liquidate amount not valid");
 
@@ -280,26 +281,23 @@ contract Bank is Initializable {
         emit MonitorEvent("LiquidateBorrow", flog);
     }
 
-    // 入金token in, 为还款和存款的组合
-    //没有借款时，无需还款，有借款时，先还款，单独写一个进行入金，而不是直接调用mint和repay，原因在于在ETH存款时会有bug，msg.value会复用。
+    // tokenIn, is a combination of repayment and deposit
     function tokenIn(address token, uint256 amountIn)
         public
         payable
         whenUnpaused
-        rewardFor(msg.sender, RewardType.TokenIn)
     {
         IFToken fToken = IFToken(controller.getFTokeAddress(token));
         require(
             controller.marketsContains(address(fToken)),
             "unsupported token"
         );
-
-        //先进行冲账操作
+    
         cancellingOut(token);
         uint256 curBorrowBalance = fToken.borrowBalanceCurrent(msg.sender);
         uint256 actualRepayAmount;
 
-        //还清欠款
+        //Pay off debts
         if (amountIn == uint256(-1)) {
             require(curBorrowBalance > 0, "no debt to repay");
             if (token != EthAddressLib.ethAddress()) {
@@ -348,7 +346,7 @@ contract Bank is Initializable {
                 );
             }
 
-            // 还款数量有剩余，转为存款
+            // If the repayment amount is left, it will be converted to deposit
             if (actualRepayAmount < amountIn) {
                 uint256 exceedAmout = SafeMath.sub(amountIn, actualRepayAmount);
                 if (token != EthAddressLib.ethAddress()) {
@@ -365,8 +363,7 @@ contract Bank is Initializable {
         }
     }
 
-    // 出金token out, 为取款和借款的组合,
-    // 取款如果该用户有对应的存款(有对应的ftoken)，完全可取出，剩余的部分采用借的逻辑,
+    // tokenOut, is a combination of withdrawal and borrowing
     function tokenOut(address token, uint256 amountOut) external whenUnpaused {
         IFToken fToken = IFToken(controller.getFTokeAddress(token));
         require(
@@ -374,10 +371,7 @@ contract Bank is Initializable {
             "unsupported token"
         );
 
-        //先进行冲账操作
-        (bool strikeOk, bytes memory strikeLog) = fToken.cancellingOut(
-            msg.sender
-        );
+        cancellingOut(token);
 
         uint256 supplyAmount = 0;
         if (amountOut == uint256(-1)) {
@@ -399,7 +393,7 @@ contract Bank is Initializable {
                 } else {
                     supplyAmount = withdrawUnderlying(
                         token,
-                        SafeMath.min(userSupplyBalance, amountOut)
+                        amountOut
                     );
                 }
             }
@@ -412,14 +406,37 @@ contract Bank is Initializable {
         }
     }
 
-    function cancellingOut(address token) public whenUnpaused {
+    function cancellingOut(address token) public whenUnpaused nonSelfLoan {
         IFToken fToken = IFToken(controller.getFTokeAddress(token));
-        //先进行冲账操作
         (bool strikeOk, bytes memory strikeLog) = fToken.cancellingOut(
             msg.sender
         );
         if (strikeOk) {
             emit MonitorEvent("CancellingOut", strikeLog);
         }
+    }
+
+    function flashloan(
+        address receiver,
+        address token,
+        uint256 amount,
+        bytes memory params
+    ) public whenUnpaused nonSelfLoan {
+        uint256 balanceBefore = controller.balance(token);
+        require(amount > 0 && amount <= balanceBefore, "insufficient flashloan liquidity");
+
+        uint256 fee = amount.mul(controller.flashloanFeeBips()).div(10000);
+        address payable _receiver = address(uint160(receiver));
+
+        controller.transferFlashloanAsset(token, _receiver, amount); 
+        IFlashLoanReceiver(_receiver).executeOperation(token, amount, fee, params);
+
+        uint256 balanceAfter = controller.balance(token);
+        require(balanceAfter >= balanceBefore.add(fee), "invalid flashloan payback amount");
+
+        address payable vault = address(uint160(controller.flashloanVault()));
+        controller.transferFlashloanAsset(token, vault, fee);
+
+        emit FlashLoan(receiver, token, amount, fee);
     }
 }

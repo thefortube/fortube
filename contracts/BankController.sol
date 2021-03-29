@@ -3,6 +3,7 @@ pragma experimental ABIEncoderV2;
 pragma solidity 0.6.4;
 
 import "./library/EthAddressLib.sol";
+import "./library/Address.sol";
 import "./Exponential.sol";
 import "./interface/IFToken.sol";
 import "./interface/IOracle.sol";
@@ -17,30 +18,29 @@ import "@openzeppelin/upgrades/contracts/Initializable.sol";
 contract BankController is Exponential, Initializable {
     using SafeERC20 for IERC20;
     using SafeMath for uint256;
+    using Address for address;
 
     struct Market {
-        // 原生币种对应的 fToken 地址
+        // The fToken address corresponding to the underlying asset
         address fTokenAddress;
-        // 币种是否可用
+        // Whether the market is available
         bool isValid;
-        // 该币种所拥有的质押能力
+        // The loan-to-value ratio owned by the underlying asset
         uint256 collateralAbility;
-        // 市场所参与的用户
+        // account's mapping in this market
         mapping(address => bool) accountsIn;
-        // 该币种的清算奖励
+        // The liquidation incentive of the underlying asset
         uint256 liquidationIncentive;
     }
 
-    // 原生币种地址 => 币种信息
+    // underlying => market
     mapping(address => Market) public markets;
 
-    address public bankEntryAddress; // bank主合约入口地址
-    address public theForceToken; // 奖励的FOR token地址
+    address public bankEntryAddress;
+    address public theForceToken;
 
-    //返利百分比，根据用户存，借，取，还花费的gas返还对应价值比例的奖励token， 奖励FOR数量 = ETH价值 * rewardFactor / price(for)， 1e18 scale
     mapping(uint256 => uint256) public rewardFactors; // RewardType ==> rewardFactor (1e18 scale);
 
-    // 用户地址 =》 币种地址（用户参与的币种）
     mapping(address => IFToken[]) public accountAssets;
 
     IFToken[] public allMarkets;
@@ -51,7 +51,6 @@ contract BankController is Exponential, Initializable {
 
     address public mulsig;
 
-    //FIXME: 统一权限管理
     modifier auth {
         require(
             msg.sender == admin || msg.sender == bankEntryAddress,
@@ -64,25 +63,8 @@ contract BankController is Exponential, Initializable {
         bankEntryAddress = _newBank;
     }
 
-    function setTheForceToken(address _theForceToken) external auth {
-        theForceToken = _theForceToken;
-    }
-
-    function setRewardFactorByType(uint256 rewaradType, uint256 factor)
-        external
-        auth
-    {
-        rewardFactors[rewaradType] = factor;
-    }
-
     function marketsContains(address fToken) public view returns (bool) {
-        uint256 len = allMarkets.length;
-        for (uint256 i = 0; i < len; ++i) {
-            if (address(allMarkets[i]) == fToken) {
-                return true;
-            }
-        }
-        return false;
+        return allFtokenMarkets[fToken];
     }
 
     uint256 public closeFactor;
@@ -91,10 +73,109 @@ contract BankController is Exponential, Initializable {
 
     address public proposedAdmin;
 
-    // 将FOR奖励池单独放到另外一个合约中
     address public rewardPool;
 
     uint256 public transferEthGasCost;
+
+    // @notice Borrow caps enforced by borrowAllowed for each token address. Defaults to zero which corresponds to unlimited borrowing.
+    mapping(address => uint) public borrowCaps;
+    
+    // @notice Supply caps enforced by mintAllowed for each token address. Defaults to zero which corresponds to unlimited supplying.
+    mapping(address => uint) public supplyCaps;
+
+    struct TokenConfig {
+        bool depositDisabled;
+        bool borrowDisabled;
+        bool withdrawDisabled;
+        bool repayDisabled;
+        bool liquidateBorrowDisabled;
+    }
+    
+    //underlying => TokenConfig
+    mapping (address => TokenConfig) public tokenConfigs;
+
+    mapping (address => uint256) public underlyingLiquidationThresholds;
+    event SetLiquidationThreshold(address indexed underlying, uint256 threshold);
+
+    bool private entered;
+    modifier nonReentrant() {
+        require(!entered, "re-entered");
+        entered = true;
+        _;
+        entered = false;
+    }
+
+    uint256 public flashloanFeeBips; // Nine out of ten thousand，9 for 0.0009
+    address public flashloanVault;// flash loan vault(recv flash loan fee);
+    event SetFlashloanParams(address indexed sender, uint256 bips, address flashloanVault);
+
+    // fToken => supported or not, using mapping to save gas instead of iterator array
+    mapping (address => bool) public allFtokenMarkets;
+    event SetAllFtokenMarkets(bytes data);
+
+    // fToken => exchangeUnit, to save gas instead of runtime calc
+    mapping (address => uint256) public allFtokenExchangeUnits;
+
+    // _setMarketBorrowSupplyCaps = _setMarketBorrowCaps + _setMarketSupplyCaps
+    function _setMarketBorrowSupplyCaps(address[] calldata tokens, uint[] calldata newBorrowCaps, uint[] calldata newSupplyCaps) external {
+        require(msg.sender == admin, "only admin can set borrow/supply caps"); 
+
+        uint numMarkets = tokens.length;
+        uint numBorrowCaps = newBorrowCaps.length;
+        uint numSupplyCaps = newSupplyCaps.length;
+
+        require(numMarkets != 0 && numMarkets == numBorrowCaps && numMarkets == numSupplyCaps, "invalid input");
+
+        for(uint i = 0; i < numMarkets; i++) {
+            borrowCaps[tokens[i]] = newBorrowCaps[i];
+            supplyCaps[tokens[i]] = newSupplyCaps[i];
+        }
+    }
+
+    
+    function setTokenConfig(
+        address t, 
+        bool _depositDisabled, 
+        bool _borrowDisabled, 
+        bool _withdrawDisabled,
+        bool _repayDisabled,
+        bool _liquidateBorrowDisabled) external {
+        require(msg.sender == admin, "only admin can set token configs");
+        tokenConfigs[t] = TokenConfig(
+            _depositDisabled,
+            _borrowDisabled,
+            _withdrawDisabled,
+            _repayDisabled,
+            _liquidateBorrowDisabled
+        );
+    }
+
+    function setLiquidationThresolds(address[] calldata underlyings, uint256[] calldata _liquidationThresolds) external onlyAdmin {
+        uint256 n = underlyings.length;
+        require(n == _liquidationThresolds.length && n >= 1, "length: wtf?");
+        for (uint i = 0; i < n; i++) {
+            uint256 ltv = markets[underlyings[i]].collateralAbility;
+            require(ltv <= _liquidationThresolds[i], "risk param error");
+            underlyingLiquidationThresholds[underlyings[i]] = _liquidationThresolds[i];
+            emit SetLiquidationThreshold(underlyings[i], _liquidationThresolds[i]);
+        }
+    }
+
+    function setFlashloanParams(uint256 _flashloanFeeBips, address _flashloanVault) external onlyAdmin {
+        require(_flashloanFeeBips <= 10000 && _flashloanVault != address(0), "flashloan param error");
+        flashloanFeeBips = _flashloanFeeBips;
+        flashloanVault = _flashloanVault;
+        emit SetFlashloanParams(msg.sender, _flashloanFeeBips, _flashloanVault);
+    }
+
+    function setAllFtokenMarkets(address[] calldata ftokens) external onlyAdmin {
+        uint256 n = ftokens.length;
+        for (uint256 i = 0; i < n; i++) {
+            allFtokenMarkets[ftokens[i]] = true;
+            allFtokenExchangeUnits[ftokens[i]] = _calcExchangeUnit(ftokens[i]);
+        }
+        emit SetAllFtokenMarkets(abi.encode(ftokens));
+    }
 
     function initialize(address _mulsig) public initializer {
         admin = msg.sender;
@@ -136,7 +217,6 @@ contract BankController is Exponential, Initializable {
 
     /**
      * @notice Returns the assets an account has entered
-     返回该账户已经参与的币种
      * @param account The address of the account to pull assets for
      * @return A dynamic list with the assets the account has entered
      */
@@ -188,10 +268,12 @@ contract BankController is Exponential, Initializable {
         address withdrawer,
         uint256 withdrawTokens
     ) public view returns (uint256) {
+        address underlying = IFToken(fToken).underlying();
         require(
-            markets[IFToken(fToken).underlying()].isValid,
+            markets[underlying].isValid,
             "Market not valid"
         );
+        require(!tokenConfigs[underlying].withdrawDisabled, "withdraw disabled");
 
         (uint256 sumCollaterals, uint256 sumBorrows) = getUserLiquidity(
             withdrawer,
@@ -202,12 +284,13 @@ contract BankController is Exponential, Initializable {
         require(sumCollaterals >= sumBorrows, "Cannot withdraw tokens");
     }
 
-    // 接收转账
+    // Receive transfer
     function transferIn(
         address account,
         address underlying,
         uint256 amount
-    ) public payable {
+    ) public nonReentrant payable {
+	require(msg.sender == bankEntryAddress || msg.sender == account, "auth failed");
         if (underlying != EthAddressLib.ethAddress()) {
             require(msg.value == 0, "ERC20 do not accecpt ETH.");
             uint256 balanceBefore = IERC20(underlying).balanceOf(address(this));
@@ -219,7 +302,7 @@ contract BankController is Exponential, Initializable {
             );
             // erc 20 => transferFrom
         } else {
-            // 接收 eth 转账，已经通过 payable 转入
+            // Receive eth transfer, which has been transferred through payable
             require(msg.value >= amount, "Eth value is not enough");
             if (msg.value > amount) {
                 //send back excess ETH
@@ -234,7 +317,7 @@ contract BankController is Exponential, Initializable {
         }
     }
 
-    // 向用户转账
+    // Transfer underlying to user
     function transferToUser(
         address underlying,
         address payable account,
@@ -243,6 +326,19 @@ contract BankController is Exponential, Initializable {
         require(
             markets[IFToken(msg.sender).underlying()].isValid,
             "TransferToUser not allowed"
+        );
+        transferToUserInternal(underlying, account, amount);
+    }
+
+    // Transfer underlying to flashloan user
+    function transferFlashloanAsset(
+        address underlying,
+        address payable account,
+        uint256 amount
+    ) external {
+        require(
+            msg.sender == bankEntryAddress,
+            "only bank auth"
         );
         transferToUserInternal(underlying, account, amount);
     }
@@ -265,37 +361,6 @@ contract BankController is Exponential, Initializable {
         }
     }
 
-    //1:1返还
-    function calcRewardAmount(
-        uint256 gasSpend,
-        uint256 gasPrice,
-        address _for
-    ) public view returns (uint256) {
-        (uint256 _ethPrice, bool _ethValid) = fetchAssetPrice(
-            EthAddressLib.ethAddress()
-        );
-        (uint256 _forPrice, bool _forValid) = fetchAssetPrice(_for);
-        if (!_ethValid || !_forValid || IERC20(_for).decimals() != 18) {
-            return 0;
-        }
-        return gasSpend.mul(gasPrice).mul(_ethPrice).div(_forPrice);
-    }
-
-    //0.5 * 1e18, 表返还0.5ETH价值的FOR
-    //1.5 * 1e18, 表返还1.5倍ETH价值的FOR
-    function calcRewardAmountByFactor(
-        uint256 gasSpend,
-        uint256 gasPrice,
-        address _for,
-        uint256 factor
-    ) public view returns (uint256) {
-        return calcRewardAmount(gasSpend, gasPrice, _for).mul(factor).div(1e18);
-    }
-
-    function setRewardPool(address _rewardPool) external onlyAdmin {
-        rewardPool = _rewardPool;
-    }
-
     function setTransferEthGasCost(uint256 _transferEthGasCost)
         external
         onlyAdmin
@@ -303,34 +368,13 @@ contract BankController is Exponential, Initializable {
         transferEthGasCost = _transferEthGasCost;
     }
 
-    function rewardForByType(
-        address account,
-        uint256 gasSpend,
-        uint256 gasPrice,
-        uint256 rewardType
-    ) external auth {
-        uint256 amount = calcRewardAmountByFactor(
-            gasSpend,
-            gasPrice,
-            theForceToken,
-            rewardFactors[rewardType]
-        );
-        amount = SafeMath.min(
-            amount,
-            IERC20(theForceToken).balanceOf(rewardPool)
-        );
-        if (amount > 0) {
-            IRewardPool(rewardPool).reward(account, amount);
-        }
-    }
-
-    // 获取实际原生代币的余额
+    // Get the balance of the actual unerderlying asset
     function getCashPrior(address underlying) public view returns (uint256) {
         IFToken fToken = IFToken(getFTokeAddress(underlying));
         return fToken.totalCash();
     }
 
-    // 获取将要更新后的原生代币的余额（预判）
+    // Get the balance of the underlying assets to be updated (pre-judgment)
     function getCashAfter(address underlying, uint256 transferInAmount)
         external
         view
@@ -339,12 +383,22 @@ contract BankController is Exponential, Initializable {
         return getCashPrior(underlying).add(transferInAmount);
     }
 
-    function mintCheck(address underlying, address minter) external {
-        require(
-            markets[IFToken(msg.sender).underlying()].isValid,
-            "MintCheck fails"
-        );
+    function mintCheck(address underlying, address minter, uint256 amount) external {
+        require(marketsContains(msg.sender), "MintCheck fails");
         require(markets[underlying].isValid, "Market not valid");
+        require(!tokenConfigs[underlying].depositDisabled, "deposit disabled");
+
+        uint supplyCap = supplyCaps[underlying];
+        // Supply cap of 0 corresponds to unlimited supplying
+        if (supplyCap != 0) {
+            uint totalSupply = IFToken(msg.sender).totalSupply();
+            uint _exchangeRate = IFToken(msg.sender).exchangeRateStored();
+            // Number of underlying assets = exchange rate multiplied by the total number of issued ftokens
+            uint256 totalUnderlyingSupply = mulScalarTruncate(_exchangeRate, totalSupply);
+            uint nextTotalUnderlyingSupply = totalUnderlyingSupply.add(amount);
+            require(nextTotalUnderlyingSupply < supplyCap, "market supply cap reached");
+        }
+
         if (!markets[underlying].accountsIn[minter]) {
             userEnterMarket(IFToken(getFTokeAddress(underlying)), minter);
         }
@@ -356,17 +410,28 @@ contract BankController is Exponential, Initializable {
         address fToken,
         uint256 borrowAmount
     ) external {
+        require(underlying == IFToken(msg.sender).underlying(), "invalid underlying token");
         require(
-            markets[IFToken(msg.sender).underlying()].isValid,
+            markets[underlying].isValid,
             "BorrowCheck fails"
         );
+        require(!tokenConfigs[underlying].borrowDisabled, "borrow disabled");
+
+        uint borrowCap = borrowCaps[underlying];
+        // Borrow cap of 0 corresponds to unlimited borrowing
+        if (borrowCap != 0) {
+            uint totalBorrows = IFToken(msg.sender).totalBorrows();
+            uint nextTotalBorrows = totalBorrows.add(borrowAmount);
+            require(nextTotalBorrows < borrowCap, "market borrow cap reached");
+        }
+
         require(markets[underlying].isValid, "Market not valid");
         (, bool valid) = fetchAssetPrice(underlying);
         require(valid, "Price is not valid");
         if (!markets[underlying].accountsIn[account]) {
             userEnterMarket(IFToken(getFTokeAddress(underlying)), account);
         }
-        // 校验用户流动性，liquidity
+        // Verify user liquidity
         (uint256 sumCollaterals, uint256 sumBorrows) = getUserLiquidity(
             account,
             IFToken(fToken),
@@ -379,9 +444,10 @@ contract BankController is Exponential, Initializable {
 
     function repayCheck(address underlying) external view {
         require(markets[underlying].isValid, "Market not valid");
+        require(!tokenConfigs[underlying].repayDisabled, "repay disabled");
     }
 
-    // 获取用户总体的存款和借款情况
+    // Get the user's overall deposit and borrowing status
     function getTotalDepositAndBorrow(address account)
         public
         view
@@ -390,40 +456,13 @@ contract BankController is Exponential, Initializable {
         return getUserLiquidity(account, IFToken(0), 0, 0);
     }
 
-    // 获取账户流动性
+    // Get account liquidity
     function getAccountLiquidity(address account)
         public
         view
         returns (uint256 liquidity, uint256 shortfall)
     {
-        (uint256 sumCollaterals, uint256 sumBorrows) = getUserLiquidity(
-            account,
-            IFToken(0),
-            0,
-            0
-        );
-        // These are safe, as the underflow condition is checked first
-        if (sumCollaterals > sumBorrows) {
-            return (sumCollaterals - sumBorrows, 0);
-        } else {
-            return (0, sumBorrows - sumCollaterals);
-        }
-    }
-
-    // 不包含FToken的流动性
-    function getAccountLiquidityExcludeDeposit(address account, address token)
-        public
-        view
-        returns (uint256, uint256)
-    {
-        IFToken fToken = IFToken(getFTokeAddress(token));
-        (uint256 sumCollaterals, uint256 sumBorrows) = getUserLiquidity(
-            account,
-            fToken,
-            fToken.balanceOf(account), //用户的fToken数量
-            0
-        );
-
+        (uint256 sumCollaterals, uint256 sumBorrows) = getTotalDepositAndBorrow(account);
         // These are safe, as the underflow condition is checked first
         if (sumCollaterals > sumBorrows) {
             return (sumCollaterals - sumBorrows, 0);
@@ -450,10 +489,11 @@ contract BankController is Exponential, Initializable {
         IFToken fToken,
         uint256 _collateralAbility,
         uint256 _liquidationIncentive
-    ) public onlyAdmin {
+    ) external onlyAdmin {
         address underlying = fToken.underlying();
 
         require(!markets[underlying].isValid, "martket existed");
+        require(tokenDecimals(underlying) <= 18, "unsupported token decimals");
 
         markets[underlying] = Market({
             isValid: true,
@@ -463,6 +503,9 @@ contract BankController is Exponential, Initializable {
         });
 
         addTokenToMarket(underlying, address(fToken));
+
+        allFtokenMarkets[address(fToken)] = true;
+        allFtokenExchangeUnits[address(fToken)] = _calcExchangeUnit(address(fToken));
     }
 
     function addTokenToMarket(address underlying, address fToken) internal {
@@ -480,18 +523,29 @@ contract BankController is Exponential, Initializable {
     }
 
     function _setCollateralAbility(
-        address underlying,
-        uint256 newCollateralAbility
+        address[] calldata underlyings,
+        uint256[] calldata newCollateralAbilities,
+        uint256[] calldata _liquidationIncentives
     ) external onlyAdmin {
-        require(markets[underlying].isValid, "Market not valid");
-
-        Market storage market = markets[underlying];
-
-        market.collateralAbility = newCollateralAbility;
+        uint256 n = underlyings.length;
+        require(n == newCollateralAbilities.length && n == _liquidationIncentives.length && n >= 1, "invalid length");
+        for (uint256 i = 0; i < n; i++) {
+            address u = underlyings[i];
+            require(markets[u].isValid, "Market not valid");
+            Market storage market = markets[u];
+            market.collateralAbility = newCollateralAbilities[i];
+            market.liquidationIncentive = _liquidationIncentives[i];
+        }
     }
 
     function setCloseFactor(uint256 _closeFactor) external onlyAdmin {
         closeFactor = _closeFactor;
+    }
+
+    // Set the transaction status of an asset, prohibit deposit, borrowing, repayment, liquidation and transfer.
+    function setMarketIsValid(address underlying, bool isValid) external onlyAdmin {
+        Market storage market = markets[underlying];
+        market.isValid = isValid;
     }
 
     /**
@@ -503,14 +557,15 @@ contract BankController is Exponential, Initializable {
         return allMarkets;
     }
 
-    function seizeCheck(address cTokenCollateral, address cTokenBorrowed)
+    function seizeCheck(address fTokenCollateral, address fTokenBorrowed)
         external
         view
-        onlyFToken(msg.sender)
     {
+        require(!IBank(bankEntryAddress).paused(), "system paused!");
         require(
-            markets[IFToken(cTokenCollateral).underlying()].isValid &&
-                markets[IFToken(cTokenBorrowed).underlying()].isValid,
+            markets[IFToken(fTokenCollateral).underlying()].isValid &&
+                markets[IFToken(fTokenBorrowed).underlying()].isValid && 
+                marketsContains(fTokenCollateral) && marketsContains(fTokenBorrowed),
             "Seize market not valid"
         );
     }
@@ -532,19 +587,17 @@ contract BankController is Exponential, Initializable {
         uint256 withdrawTokens,
         uint256 borrowAmount
     ) public view returns (uint256, uint256) {
-        // 用户参与的每个币种
         IFToken[] memory assets = accountAssets[account];
         LiquidityLocals memory vars;
-        // 对于每个币种
         for (uint256 i = 0; i < assets.length; i++) {
             IFToken asset = assets[i];
-            // 获取 fToken 的余额和兑换率
+            // Get the balance and exchange rate of fToken
             (vars.fTokenBalance, vars.borrowBalance, vars.exchangeRate) = asset
                 .getAccountState(account);
-            // 该币种的质押率
+            // The ltv of the underling asset
             vars.collateralAbility = markets[asset.underlying()]
                 .collateralAbility;
-            // 获取币种价格
+            // fetch asset price
             (uint256 oraclePrice, bool valid) = fetchAssetPrice(
                 asset.underlying()
             );
@@ -567,6 +620,7 @@ contract BankController is Exponential, Initializable {
             );
 
             vars.borrowBalance = vars.borrowBalance.mul(fixUnit);
+            vars.borrowBalance = vars.borrowBalance.mul(1e18).div(vars.collateralAbility);
 
             vars.sumBorrows = mulScalarTruncateAddUInt(
                 vars.oraclePrice,
@@ -574,9 +628,9 @@ contract BankController is Exponential, Initializable {
                 vars.sumBorrows
             );
 
-            // 借款和取款的时候，将当前要操作的数量，直接计算在账户流动性里面
+            // When borrowing and withdrawing asset, the current amount to be operated is directly calculated in the account liquidity
             if (asset == fTokenNow) {
-                // 取款
+                // withdrawing
                 vars.sumBorrows = mulScalarTruncateAddUInt(
                     vars.collateral,
                     withdrawTokens,
@@ -584,8 +638,9 @@ contract BankController is Exponential, Initializable {
                 );
 
                 borrowAmount = borrowAmount.mul(fixUnit);
+                borrowAmount = borrowAmount.mul(1e18).div(vars.collateralAbility);
 
-                // 借款
+                // borrowing
                 vars.sumBorrows = mulScalarTruncateAddUInt(
                     vars.oraclePrice,
                     borrowAmount,
@@ -597,84 +652,66 @@ contract BankController is Exponential, Initializable {
         return (vars.sumCollateral, vars.sumBorrows);
     }
 
-    //不包含某一token的流动性
-    function getUserLiquidityExcludeToken(
-        address account,
-        IFToken excludeToken,
-        IFToken fTokenNow,
-        uint256 withdrawTokens,
-        uint256 borrowAmount
-    ) external view returns (uint256, uint256) {
-        // 用户参与的每个币种
+    struct HealthFactorLocals {
+        uint256 sumLiquidity;
+        uint256 sumLiquidityPlusThreshold;
+        uint256 sumBorrows;
+        uint256 fTokenBalance;
+        uint256 borrowBalance;
+        uint256 exchangeRate;
+        uint256 oraclePrice;
+        uint256 liquidationThreshold;
+        uint256 liquidity;
+        uint256 liquidityPlusThreshold;
+    }
+
+    function getHealthFactor(address account) public view returns (
+        uint256 healthFactor
+    ) {
         IFToken[] memory assets = accountAssets[account];
-        LiquidityLocals memory vars;
-        // 对于每个币种
+        HealthFactorLocals memory vars;
+        uint256 _healthFactor = uint256(-1);
         for (uint256 i = 0; i < assets.length; i++) {
             IFToken asset = assets[i];
-
-            //不包含token
-            if (address(asset) == address(excludeToken)) {
-                continue;
-            }
-
-            // 获取 fToken 的余额和兑换率
+            address underlying = asset.underlying();
             (vars.fTokenBalance, vars.borrowBalance, vars.exchangeRate) = asset
                 .getAccountState(account);
-            // 该币种的质押率
-            vars.collateralAbility = markets[asset.underlying()]
-                .collateralAbility;
-            // 获取币种价格
+            vars.liquidationThreshold = underlyingLiquidationThresholds[underlying];    
             (uint256 oraclePrice, bool valid) = fetchAssetPrice(
-                asset.underlying()
+                underlying
             );
             require(valid, "Price is not valid");
             vars.oraclePrice = oraclePrice;
 
             uint256 fixUnit = calcExchangeUnit(address(asset));
-            uint256 exchangeRateFixed = mulScalar(
-                vars.exchangeRate,
-                fixUnit
-            );
+            uint256 exchangeRateFixed = mulScalar(vars.exchangeRate, fixUnit);
 
-            vars.collateral = mulExp3(
-                vars.collateralAbility,
+            vars.liquidityPlusThreshold = mulExp3(
+                vars.liquidationThreshold,
                 exchangeRateFixed,
                 vars.oraclePrice
             );
-
-            vars.sumCollateral = mulScalarTruncateAddUInt(
-                vars.collateral,
+            vars.sumLiquidityPlusThreshold = mulScalarTruncateAddUInt(
+                vars.liquidityPlusThreshold,
                 vars.fTokenBalance,
-                vars.sumCollateral
+                vars.sumLiquidityPlusThreshold
             );
+
+            vars.borrowBalance = vars.borrowBalance.mul(fixUnit);
+            vars.borrowBalance = vars.borrowBalance.mul(1e18).div(vars.liquidationThreshold);
 
             vars.sumBorrows = mulScalarTruncateAddUInt(
                 vars.oraclePrice,
                 vars.borrowBalance,
                 vars.sumBorrows
             );
-
-            // 借款和取款的时候，将当前要操作的数量，直接计算在账户流动性里面
-            if (asset == fTokenNow) {
-                // 取款
-                vars.sumBorrows = mulScalarTruncateAddUInt(
-                    vars.collateral,
-                    withdrawTokens,
-                    vars.sumBorrows
-                );
-
-                borrowAmount = borrowAmount.mul(fixUnit);
-
-                // 借款
-                vars.sumBorrows = mulScalarTruncateAddUInt(
-                    vars.oraclePrice,
-                    borrowAmount,
-                    vars.sumBorrows
-                );
-            }
+        }
+    
+        if (vars.sumBorrows > 0) {
+            _healthFactor = divExp(vars.sumLiquidityPlusThreshold, vars.sumBorrows);
         }
 
-        return (vars.sumCollateral, vars.sumBorrows);
+        return _healthFactor;
     }
 
     function tokenDecimals(address token) public view returns (uint256) {
@@ -682,85 +719,6 @@ contract BankController is Exponential, Initializable {
             token == EthAddressLib.ethAddress()
                 ? 18
                 : uint256(IERC20(token).decimals());
-    }
-
-    //计算user的取款指定token的最大数量
-    function calcMaxWithdrawAmount(address user, address token)
-        public
-        view
-        returns (uint256)
-    {
-        (uint256 depoistValue, uint256 borrowValue) = getTotalDepositAndBorrow(
-            user
-        );
-        if (depoistValue <= borrowValue) {
-            return 0;
-        }
-
-        uint256 netValue = subExp(depoistValue, borrowValue);
-        // redeemValue = netValue / collateralAblility;
-        uint256 redeemValue = divExp(
-            netValue,
-            markets[token].collateralAbility
-        );
-
-        (uint256 oraclePrice, bool valid) = fetchAssetPrice(token);
-        require(valid, "Price is not valid");
-
-        uint fixUnit = 10 ** SafeMath.abs(18, tokenDecimals(token));
-        uint256 redeemAmount = divExp(redeemValue, oraclePrice).div(fixUnit);
-        IFToken fToken = IFToken(getFTokeAddress(token));
-
-        redeemAmount = SafeMath.min(
-            redeemAmount,
-            fToken.calcBalanceOfUnderlying(user)
-        );
-        return redeemAmount;
-    }
-
-    function calcMaxBorrowAmount(address user, address token)
-        public
-        view
-        returns (uint256)
-    {
-        (
-            uint256 depoistValue,
-            uint256 borrowValue
-        ) = getAccountLiquidityExcludeDeposit(user, token);
-        if (depoistValue <= borrowValue) {
-            return 0;
-        }
-        uint256 netValue = subExp(depoistValue, borrowValue);
-        (uint256 oraclePrice, bool valid) = fetchAssetPrice(token);
-        require(valid, "Price is not valid");
-
-        uint fixUnit = 10 ** SafeMath.abs(18, tokenDecimals(token));
-        uint256 borrowAmount = divExp(netValue, oraclePrice).div(fixUnit);
-
-        return borrowAmount;
-    }
-
-    function calcMaxBorrowAmountWithRatio(address user, address token)
-        public
-        view
-        returns (uint256)
-    {
-        IFToken fToken = IFToken(getFTokeAddress(token));
-
-        return
-            SafeMath.mul(calcMaxBorrowAmount(user, token), 1e18).div(fToken.borrowSafeRatio());
-    }
-
-    function calcMaxCashOutAmount(address user, address token)
-        public
-        view
-        returns (uint256)
-    {
-        return
-            addExp(
-                calcMaxWithdrawAmount(user, token),
-                calcMaxBorrowAmountWithRatio(user, token)
-            );
     }
 
     function isFTokenValid(address fToken) external view returns (bool) {
@@ -774,8 +732,13 @@ contract BankController is Exponential, Initializable {
         address liquidator,
         uint256 repayAmount
     ) external onlyFToken(msg.sender) {
-        (, uint256 shortfall) = getAccountLiquidity(borrower);
-        require(shortfall != 0, "Insufficient shortfall");
+        address underlyingBorrowed = IFToken(fTokenBorrowed).underlying();
+        address underlyingCollateral = IFToken(fTokenCollateral).underlying();
+        require(!tokenConfigs[underlyingBorrowed].liquidateBorrowDisabled, "liquidateBorrow: liquidate borrow disabled");
+        require(!tokenConfigs[underlyingCollateral].liquidateBorrowDisabled, "liquidateBorrow: liquidate colleteral disabled");
+
+        uint256 hf = getHealthFactor(borrower);
+        require(hf < 1e18, "HealthFactor > 1");
         userEnterMarket(IFToken(fTokenCollateral), liquidator);
 
         uint256 borrowBalance = IFToken(fTokenBorrowed).borrowBalanceStored(
@@ -785,14 +748,15 @@ contract BankController is Exponential, Initializable {
         require(repayAmount <= maxClose, "Too much repay");
     }
 
-    function calcExchangeUnit(address fToken) public view returns (uint256) {
+    function _calcExchangeUnit(address fToken) internal view returns (uint256) {
         uint256 fTokenDecimals = uint256(IFToken(fToken).decimals());
-        uint256 underlyingDecimals = IFToken(fToken).underlying() ==
-            EthAddressLib.ethAddress()
-            ? 18
-            : uint256(IERC20(IFToken(fToken).underlying()).decimals());
+        uint256 underlyingDecimals = tokenDecimals(IFToken(fToken).underlying());
 
         return 10**SafeMath.abs(fTokenDecimals, underlyingDecimals);
+    }
+
+    function calcExchangeUnit(address fToken) public view returns (uint256) {
+        return allFtokenExchangeUnits[fToken];
     }
 
     function liquidateTokens(
@@ -834,13 +798,6 @@ contract BankController is Exponential, Initializable {
         );
 
         return seizeTokens;
-    }
-
-    function _setLiquidationIncentive(
-        address underlying,
-        uint256 _liquidationIncentive
-    ) public onlyAdmin {
-        markets[underlying].liquidationIncentive = _liquidationIncentive;
     }
 
     struct ReserveWithdrawalLogStruct {
@@ -923,26 +880,18 @@ contract BankController is Exponential, Initializable {
         uint256 global_token_reserved;
     }
 
-    function addReserves(address underlying, uint256 addAmount)
-        external
-        payable
-    {
-        IFToken fToken = IFToken(getFTokeAddress(underlying));
-        fToken._addReservesFresh(addAmount);
-        transferIn(msg.sender, underlying, addAmount);
-        fToken.addTotalCash(addAmount);
+    function balance(address token) external view returns (uint256) {
+        if (token == EthAddressLib.ethAddress()) {
+            return address(this).balance;
+        }
+        return IERC20(token).balanceOf(address(this));
+    }
 
-        ReserveDepositLogStruct memory rds = ReserveDepositLogStruct(
-            underlying,
-            addAmount,
-            fToken.exchangeRateStored(),
-            fToken.getBorrowRate(),
-            fToken.tokenCash(underlying, address(this))
-        );
-
-        IBank(bankEntryAddress).MonitorEventCallback(
-            "ReserveDeposit",
-            abi.encode(rds)
-        );
+    /**
+    * @dev receive function enforces that the caller is a contract, to support flashloan transfers
+    **/
+    receive() external payable {
+        //only contracts can send ETH to the bank controller
+        require(address(msg.sender).isContract(), "Only contracts can send ether to the bank controller");
     }
 }

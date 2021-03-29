@@ -36,13 +36,6 @@ interface IBankController {
 
     function repayCheck(address underlying) external;
 
-    function rewardForByType(
-        address account,
-        uint256 gasSpend,
-        uint256 gasPrice,
-        uint256 rewardType
-    ) external;
-
     function liquidateBorrowCheck(
         address fTokenBorrowed,
         address fTokenCollateral,
@@ -75,7 +68,7 @@ interface IBankController {
     function seizeCheck(address cTokenCollateral, address cTokenBorrowed)
         external;
 
-    function mintCheck(address underlying, address minter) external;
+    function mintCheck(address underlying, address minter, uint256 amount) external;
 
     function addReserves(address underlying, uint256 addAmount)
         external
@@ -110,4 +103,13 @@ interface IBankController {
     function transferEthGasCost() external view returns (uint256);
 
     function isFTokenValid(address fToken) external view returns (bool);
+
+    function balance(address token) external view returns (uint256);
+    function flashloanFeeBips() external view returns (uint256);
+    function flashloanVault() external view returns (address);
+    function transferFlashloanAsset(
+        address token,
+        address payable user,
+        uint256 amount
+    ) external;
 }

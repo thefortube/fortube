@@ -43,7 +43,6 @@ contract FToken is Exponential, Initializable {
 
     IInterestRateModel public interestRateModel;
 
-    // 该 fToken 所代表的原生代币
     address public underlying;
 
     mapping(address => uint256) public accountTokens;
@@ -52,13 +51,12 @@ contract FToken is Exponential, Initializable {
 
     uint256 public borrowSafeRatio;
 
-    address public bank; // bank主合约入口地址
+    address public bank;
 
     bool internal _notEntered;
 
     uint256 public constant ONE = 1e18;
 
-    // 借款人账户
     struct BorrowSnapshot {
         uint256 principal;
         uint256 interestIndex;
@@ -68,6 +66,11 @@ contract FToken is Exponential, Initializable {
     uint256 public totalCash;
 
     event Transfer(address indexed from, address indexed to, uint256 value);
+    event NewInterestRateModel(address oldIRM, uint256 oldUR, uint256 oldAPR, uint256 oldAPY, uint256 exRate1,
+        address newIRM, uint256 newUR, uint256 newAPR, uint256 newAPY, uint256 exRate2
+    );
+    event NewInitialExchangeRate(uint256 oldInitialExchangeRate, uint256 oldUR, uint256 oldAPR, uint256 oldAPY, uint256 exRate1,
+        uint256 _initialExchangeRate, uint256 newUR, uint256 newAPR, uint256 newAPY, uint256 exRate2);
 
     event Approval(
         address indexed owner,
@@ -213,11 +216,11 @@ contract FToken is Exponential, Initializable {
         transferTokens(msg.sender, src, dst, amount);
 
         TransferLogStruct memory tls = TransferLogStruct(
-            msg.sender,
+            src,
             underlying,
             address(this),
             amount,
-            balanceOf(msg.sender),
+            balanceOf(src),
             dst,
             balanceOf(dst),
             tokenCash(underlying, address(controller))
@@ -228,7 +231,6 @@ contract FToken is Exponential, Initializable {
         return true;
     }
 
-    // tokens -> 转账的 fToken 的数量
     function transferTokens(
         address spender,
         address src,
@@ -307,7 +309,6 @@ contract FToken is Exponential, Initializable {
         uint256 global_token_reserved;
     }
 
-    // 存款记账
     function mint(address user, uint256 amount)
         external
         onlyBank
@@ -318,14 +319,13 @@ contract FToken is Exponential, Initializable {
         return mintInternal(user, amount);
     }
 
-    // 存款记账
     function mintInternal(address user, uint256 amount)
         internal
         returns (bytes memory)
     {
         require(accrualBlockNumber == getBlockNumber(), "Blocknumber fails");
         MintLocals memory tmp;
-        controller.mintCheck(underlying, user);
+        controller.mintCheck(underlying, user, amount);
         tmp.exchangeRate = exchangeRateStored();
         tmp.mintTokens = divScalarByExpTruncate(amount, tmp.exchangeRate);
         tmp.totalSupplyNew = addExp(totalSupply, tmp.mintTokens);
@@ -342,12 +342,12 @@ contract FToken is Exponential, Initializable {
             address(this),
             tmp.mintTokens,
             amount,
-            exchangeRateAfter(amount), //cheque_token_value, 存之后的交换率（预判）
+            exchangeRateAfter(amount),
             interestRateModel.getBorrowRate(
                 preCalcTokenCash,
                 totalBorrows,
                 totalReserves
-            ), //loan_interest_rate 借款利率,存之后的价款利率
+            ),
             tokenCash(address(this), user),
             preCalcTokenCash
         );
@@ -375,7 +375,6 @@ contract FToken is Exponential, Initializable {
         uint256 global_token_reserved;
     }
 
-    // 用户借钱
     function borrow(address payable borrower, uint256 borrowAmount)
         external
         onlyBank
@@ -386,7 +385,6 @@ contract FToken is Exponential, Initializable {
         return borrowInternal(borrower, borrowAmount);
     }
 
-    // 用户借钱
     function borrowInternal(address payable borrower, uint256 borrowAmount)
         internal
         returns (bytes memory)
@@ -440,7 +438,6 @@ contract FToken is Exponential, Initializable {
         uint256 actualRepayAmount;
     }
 
-    // 计算兑换率
     function exchangeRateStored() public view returns (uint256 exchangeRate) {
         return calcExchangeRate(totalBorrows, totalReserves);
     }
@@ -466,7 +463,6 @@ contract FToken is Exponential, Initializable {
         }
     }
 
-    // 计算兑换率(预判)，在实际转账之前调用，只是用于发事件，用户后端审计
     function exchangeRateAfter(uint256 transferInAmout)
         public
         view
@@ -474,7 +470,7 @@ contract FToken is Exponential, Initializable {
     {
         uint256 _totalSupply = totalSupply;
         if (_totalSupply == 0) {
-            // 如果市场是初始化状态，那么返回初始兑换率
+            // If the market is initialized, then return to the initial exchange rate
             return initialExchangeRate;
         } else {
             /*
@@ -493,9 +489,7 @@ contract FToken is Exponential, Initializable {
     }
 
     function balanceOfUnderlying(address owner) external returns (uint256) {
-        // 获取利率
         uint256 exchangeRate = exchangeRateCurrent();
-        // 利率乘余额
         uint256 balance = mulScalarTruncate(exchangeRate, accountTokens[owner]);
         return balance;
     }
@@ -511,7 +505,6 @@ contract FToken is Exponential, Initializable {
             _totalBorrows,
             _trotalReserves
         );
-        // 利率乘余额
         uint256 balance = mulScalarTruncate(
             _exchangeRate,
             accountTokens[owner]
@@ -524,7 +517,6 @@ contract FToken is Exponential, Initializable {
         return exchangeRateStored();
     }
 
-    // 获取账户信息
     function getAccountState(address account)
         external
         view
@@ -561,7 +553,6 @@ contract FToken is Exponential, Initializable {
         uint256 global_token_reserved;
     }
 
-    // todo onlyController
     function withdraw(
         address payable withdrawer,
         uint256 withdrawTokensIn,
@@ -576,7 +567,6 @@ contract FToken is Exponential, Initializable {
         uint256 withdrawTokensIn,
         uint256 withdrawAmountIn
     ) internal returns (uint256, bytes memory) {
-        // 一个是想要兑换 cTokens 的数量，一个是想要兑换 asset 的数量，必须有一个是 0
         require(
             withdrawTokensIn == 0 || withdrawAmountIn == 0,
             "withdraw parameter not valid"
@@ -641,7 +631,6 @@ contract FToken is Exponential, Initializable {
         uint256 withdrawTokensIn,
         uint256 withdrawAmountIn
     ) internal returns (uint256, bytes memory) {
-        // 一个是想要兑换 cTokens 的数量，一个是想要兑换 asset 的数量，必须有一个是 0
         require(
             withdrawTokensIn == 0 || withdrawAmountIn == 0,
             "withdraw parameter not valid"
@@ -698,12 +687,10 @@ contract FToken is Exponential, Initializable {
         return (tmp.withdrawAmount, abi.encode(wls));
     }
 
-    // 更新利息
     function accrueInterest() public onlyRestricted {
         uint256 currentBlockNumber = getBlockNumber();
         uint256 accrualBlockNumberPrior = accrualBlockNumber;
 
-        // 太短 零利息
         if (accrualBlockNumberPrior == currentBlockNumber) {
             return;
         }
@@ -713,16 +700,13 @@ contract FToken is Exponential, Initializable {
         uint256 reservesPrior = totalReserves;
         uint256 borrowIndexPrior = borrowIndex;
 
-        // // 计算借贷利率
         uint256 borrowRate = interestRateModel.getBorrowRate(
             cashPrior,
             borrowsPrior,
             reservesPrior
         );
-        // // 不能超过最大利率
         require(borrowRate <= borrowRateMax, "borrow rate is too high");
 
-        // // 计算块差
         uint256 blockDelta = currentBlockNumber.sub(accrualBlockNumberPrior);
 
         /*
@@ -768,7 +752,6 @@ contract FToken is Exponential, Initializable {
             totalBorrows,
             totalReserves
         );
-        // 不能超过最大利率
         require(borrowRate <= borrowRateMax, "borrow rate is too high");
     }
 
@@ -785,7 +768,6 @@ contract FToken is Exponential, Initializable {
         _accrualBlockNumber = getBlockNumber();
         uint256 accrualBlockNumberPrior = accrualBlockNumber;
 
-        // 太短 零利息
         if (accrualBlockNumberPrior == _accrualBlockNumber) {
             return (
                 accrualBlockNumber,
@@ -800,16 +782,13 @@ contract FToken is Exponential, Initializable {
         uint256 reservesPrior = totalReserves;
         uint256 borrowIndexPrior = borrowIndex;
 
-        // // 计算借贷利率
         uint256 borrowRate = interestRateModel.getBorrowRate(
             cashPrior,
             borrowsPrior,
             reservesPrior
         );
-        // // 不能超过最大利率
         require(borrowRate <= borrowRateMax, "borrow rate is too high");
 
-        // // 计算块差
         uint256 blockDelta = _accrualBlockNumber.sub(accrualBlockNumberPrior);
 
         /*
@@ -854,7 +833,6 @@ contract FToken is Exponential, Initializable {
             totalBorrows,
             totalReserves
         );
-        // 不能超过最大利率
         require(borrowRate <= borrowRateMax, "borrow rate is too high");
     }
 
@@ -875,7 +853,6 @@ contract FToken is Exponential, Initializable {
         view
         returns (uint256 result)
     {
-        // 借贷数量
         BorrowSnapshot memory borrowSnapshot = accountBorrows[user];
 
         if (borrowSnapshot.principal == 0) {
@@ -895,13 +872,82 @@ contract FToken is Exponential, Initializable {
         reserveFactor = newReserveFactor;
     }
 
+    struct ReserveDepositLogStruct {
+        address token_address;
+        uint256 reserve_funded;
+        uint256 cheque_token_value;
+        uint256 loan_interest_rate;
+        uint256 global_token_reserved;
+    }
+
     function _setInterestRateModel(IInterestRateModel newInterestRateModel)
-        external
+        public
         onlyAdmin
     {
+        address oldIRM = address(interestRateModel);
+        uint256 oldUR = utilizationRate();
+        uint256 oldAPR = APR();
+        uint256 oldAPY = APY();
+
+        uint256 exRate1 = exchangeRateStored();     
         accrueInterest();
+        uint256 exRate2 = exchangeRateStored();
+
         require(accrualBlockNumber == getBlockNumber(), "Blocknumber fails");
+
         interestRateModel = newInterestRateModel;
+        uint256 newUR = utilizationRate();
+        uint256 newAPR = APR();
+        uint256 newAPY = APY();
+
+        emit NewInterestRateModel(oldIRM, oldUR, oldAPR, oldAPY, exRate1, address(newInterestRateModel), newUR, newAPR, newAPY, exRate2);
+
+        ReserveDepositLogStruct memory rds = ReserveDepositLogStruct(
+            underlying,
+            0,
+            exchangeRateStored(),
+            getBorrowRate(),
+            tokenCash(underlying, address(controller))
+        );
+
+        IBank(bank).MonitorEventCallback(
+            "ReserveDeposit",
+            abi.encode(rds)
+        );
+    }
+
+    function _setInitialExchangeRate(uint256 _initialExchangeRate) external onlyAdmin {
+        uint256 oldInitialExchangeRate = initialExchangeRate;
+
+        uint256 oldUR = utilizationRate();
+        uint256 oldAPR = APR();
+        uint256 oldAPY = APY();
+
+        uint256 exRate1 = exchangeRateStored();
+        accrueInterest();
+        uint256 exRate2 = exchangeRateStored();
+
+        require(accrualBlockNumber == getBlockNumber(), "Blocknumber fails");
+
+        initialExchangeRate = _initialExchangeRate;
+        uint256 newUR = utilizationRate();
+        uint256 newAPR = APR();
+        uint256 newAPY = APY();
+
+        emit NewInitialExchangeRate(oldInitialExchangeRate, oldUR, oldAPR, oldAPY, exRate1, initialExchangeRate, newUR, newAPR, newAPY, exRate2);
+
+        ReserveDepositLogStruct memory rds = ReserveDepositLogStruct(
+            underlying,
+            0,
+            exchangeRateStored(),
+            getBorrowRate(),
+            tokenCash(underlying, address(controller))
+        );
+
+        IBank(bank).MonitorEventCallback(
+            "ReserveDeposit",
+            abi.encode(rds)
+        );
     }
 
     function getBlockNumber() internal view returns (uint256) {
@@ -942,7 +988,7 @@ contract FToken is Exponential, Initializable {
         tmp.borrowerIndex = accountBorrows[borrower].interestIndex;
         tmp.accountBorrows = borrowBalanceStoredInternal(borrower);
 
-        // -1 表示还最大
+        // -1 Means the repay all
         if (repayAmount == uint256(-1)) {
             tmp.repayAmount = tmp.accountBorrows;
         } else {
@@ -969,12 +1015,12 @@ contract FToken is Exponential, Initializable {
             address(this),
             tmp.repayAmount,
             SafeMath.abs(tmp.accountBorrows, lastPrincipal),
-            exchangeRateAfter(tmp.repayAmount), //repay之后的交换率
+            exchangeRateAfter(tmp.repayAmount),
             interestRateModel.getBorrowRate(
                 preCalcTokenCash,
                 totalBorrows,
                 totalReserves
-            ), //repay之后的借款利率
+            ),
             accountBorrows[borrower].principal,
             preCalcTokenCash
         );
@@ -1037,17 +1083,14 @@ contract FToken is Exponential, Initializable {
             "Blocknumber fails"
         );
 
-        // 还钱
         (uint256 actualRepayAmount, ) = repayInternal(borrower, repayAmount);
 
-        // 计算清算的质押物数量（fToken数量）
         uint256 seizeTokens = controller.liquidateTokens(
             address(this),
             address(fTokenCollateral),
             actualRepayAmount
         );
 
-        // 借款人得要有这么多余额才行
         require(
             fTokenCollateral.balanceOf(borrower) >= seizeTokens,
             "Seize too much"
@@ -1108,14 +1151,12 @@ contract FToken is Exponential, Initializable {
         uint256 global_token_reserved;
     }
 
-    //冲账处理
     function cancellingOut(address striker)
         public
         onlyBank
         nonReentrant
         returns (bool strikeOk, bytes memory strikeLog)
     {
-        // 需要冲账时，计算利息
         if (
             borrowBalanceStoredInternal(striker) > 0 && balanceOf(striker) > 0
         ) {
@@ -1128,9 +1169,7 @@ contract FToken is Exponential, Initializable {
             bytes memory repayLog;
             uint256 withdrawAmount;
             bytes memory withdrawLog;
-            // 有借款和存款(fToken)
             if (curBorrowBalance > 0 && userSupplyBalance > 0) {
-                //无实际转账的赎回（冲账赎回）
                 if (userSupplyBalance > curBorrowBalance) {
                     (withdrawAmount, withdrawLog) = strikeWithdrawInternal(
                         striker,
@@ -1199,7 +1238,7 @@ contract FToken is Exponential, Initializable {
         uint256 seizeTokens
     ) internal {
         require(borrower != liquidator, "Liquidator cannot be borrower");
-        controller.seizeCheck(msg.sender, seizerToken);
+        controller.seizeCheck(address(this), seizerToken);
 
         accountTokens[borrower] = accountTokens[borrower].sub(seizeTokens);
         accountTokens[liquidator] = accountTokens[liquidator].add(seizeTokens);
@@ -1247,14 +1286,12 @@ contract FToken is Exponential, Initializable {
         _notEntered = true;
     }
 
-    // 借款年利率
     function APR() public view returns (uint256) {
         uint256 cash = tokenCash(underlying, address(controller));
         return interestRateModel.APR(cash, totalBorrows, totalReserves);
     }
 
-    // 存款年利率
-    function APY() external view returns (uint256) {
+    function APY() public view returns (uint256) {
         uint256 cash = tokenCash(underlying, address(controller));
         return
             interestRateModel.APY(
@@ -1265,14 +1302,17 @@ contract FToken is Exponential, Initializable {
             );
     }
 
-    // 借款年利率
+    function utilizationRate() public view returns (uint256) {
+        uint256 cash = tokenCash(underlying, address(controller));
+        return interestRateModel.utilizationRate(cash, totalBorrows, totalReserves);
+    }
+
     function getBorrowRate() public view returns (uint256) {
         uint256 cash = tokenCash(underlying, address(controller));
         return
             interestRateModel.getBorrowRate(cash, totalBorrows, totalReserves);
     }
 
-    // 存款年利率
     function getSupplyRate() public view returns (uint256) {
         uint256 cash = tokenCash(underlying, address(controller));
         return
