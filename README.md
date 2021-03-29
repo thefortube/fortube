@@ -246,9 +246,6 @@ FCREAM:
 FBAND:
 - https://bscscan.com/address/0x77ccecaf88df25e29a2be941abdcb8f98a33eae3#code
 
-FCAN:
-- https://bscscan.com/address/0x66D6cb443c7E1291AbA34A5c0cF562894092c4ae#code
-
 FADA:
 - https://bscscan.com/address/0xe4F621719D6b9f1C392DA83e8d766D55b5663805#code
 
