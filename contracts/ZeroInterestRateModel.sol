@@ -10,7 +10,7 @@ contract ZeroInterestRateModel {
     function utilizationRate(
         uint256 cash,
         uint256 borrows,
-        uint256 reserves
+        uint256 /* reserves */
     ) public pure returns (uint256) {
         if (borrows == 0) {
             return 0;
@@ -21,36 +21,36 @@ contract ZeroInterestRateModel {
     }
 
     function getBorrowRate(
-        uint256 cash,
-        uint256 borrows,
-        uint256 reserves
-    ) public view returns (uint256) {
+        uint256 /* cash */,
+        uint256 /* borrows */,
+        uint256 /* reserves */
+    ) public pure returns (uint256) {
         return 0;
     }
 
     function getSupplyRate(
-        uint256 cash,
-        uint256 borrows,
-        uint256 reserves,
-        uint256 reserveFactorMantissa
-    ) public view returns (uint256) {
+        uint256 /* cash */,
+        uint256 /* borrows */,
+        uint256 /* reserves */,
+        uint256 /* reserveFactorMantissa */
+    ) public pure returns (uint256) {
         return 0;
     }
 
     function APR(
-        uint256 cash,
-        uint256 borrows,
-        uint256 reserves
-    ) external view returns (uint256) {
+        uint256 /* cash */,
+        uint256 /* borrows */,
+        uint256 /* reserves */
+    ) external pure returns (uint256) {
         return 0;
     }
 
     function APY(
-        uint256 cash,
-        uint256 borrows,
-        uint256 reserves,
-        uint256 reserveFactorMantissa
-    ) external view returns (uint256) {
+        uint256 /* cash */,
+        uint256 /* borrows */,
+        uint256 /* reserves */,
+        uint256 /* reserveFactorMantissa */
+    ) external pure returns (uint256) {
         return 0;
     }
 }
